@@ -61,8 +61,12 @@ Note the [GEOID column](https://www.census.gov/programs-surveys/geography/guidan
 
 How do I find variables?
 
-```{r v2010, cache=TRUE}
+```{r v2020, cache=TRUE}
 v2020 <- load_variables(2020, "acs5", cache = TRUE)
+```
+
+
+```{r v2020_view, eval=FALSE}
 v2020 |> filter(str_detect(concept, "AGE")) |> View()
 ```
 
