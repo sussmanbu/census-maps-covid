@@ -1,0 +1,204 @@
+---
+title: "covid census maps"
+format: gfm
+---
+
+
+```{r}
+library(tidyverse)
+library(sf)
+```
+
+Our goal for today is to study the relationship between Covid deaths in an area and the population demographics in that area.
+
+## Load the covid data
+
+First we'll load in the files from the NY Times Gihub repository that I've copied here.
+This data has daily totals for COVID cases and deaths both by state and by county.
+
+```{r}
+state_cdf <- read_csv("covid-19-data/us-states.csv")
+county_cdf <- read_csv("covid-19-data/us-counties.csv")
+```
+
+
+# Pulling in US Census data
+
+
+
+## tidycensus
+
+See https://walker-data.com/tidycensus/index.html for lots of information.
+
+* First step is to sign up for a census API key https://api.census.gov/data/key_signup.html
+* Once you get your key, specify it using `census_api_key("YOUR API KEY GOES HERE", install = TRUE)`.
+
+
+```{r load_package}
+library(tidycensus)
+```
+
+## What geography?
+
+
+Main ones are, in order of specificity,
+
+* us
+* region
+* division
+* state
+* county
+* county subdivision
+* tract
+* block group
+* block
+
+
+Note the [GEOID column](https://www.census.gov/programs-surveys/geography/guidance/geo-identifiers.html). These IDs are often used in other data sets. 
+
+
+## What variable?
+
+How do I find variables?
+
+```{r v2010, cache=TRUE}
+v2020 <- load_variables(2020, "acs5", cache = TRUE)
+v2020 |> filter(str_detect(concept, "AGE")) |> View()
+```
+
+Search through this in an Excel-like way using `View(v2020)`. 
+It can be tricky to find things at first. 
+
+
+
+```{r}
+
+```
+
+
+```{r}
+
+vars_df <- v2020 |>
+  filter(str_detect(concept, "^SEX BY AGE \\(.* ALONE\\)")) |> 
+  filter(label %in% c("Estimate!!Total:", "Estimate!!Total:!!Male:!!65 to 74 years")) |>
+  mutate(
+    variable = name,
+    age = if_else(
+      str_detect(label, "65 to 74"),
+      "65 to 74", 
+      "Total"
+    ),
+    race = str_extract(concept, "\\((.*) ALONE\\)", group = 1),
+    .keep = "none"
+  )
+
+age_df <- get_acs(
+    geography = "county",
+    state = "MA",
+    variables = vars_df |> pull(variable),
+    year = 2020,
+    geometry = TRUE
+  ) |>
+  left_join(vars_df) |> 
+  select(-moe, -variable, -NAME) |> 
+  rename(FIPS = GEOID) |> 
+  pivot_wider(names_from = "age", values_from = "estimate")
+```
+
+
+# Making a map
+
+
+```{r}
+ggplot(age_df, aes(x = `65 to 74` / Total, fill = race)) + 
+  geom_histogram(position = "dodge")
+```
+
+```{r}
+age_df |>
+  ggplot(aes(fill =  `65 to 74` / Total)) + 
+  geom_sf() +
+  facet_wrap(~race) +
+  coord_sf(crs = 26986) +
+  scale_fill_viridis_c(option = "magma")+
+  theme_minimal()
+```
+
+
+
+## Coordinate Reference Systems
+
+If you start with spatial data, it will usually have a coordinate reference system.
+
+```{r}
+library(sf)
+st_crs(age_df)
+```
+
+If you have data with latitude and longitude columns, you'll need to specify a CRS if you want to align it with other data.
+
+
+Here we just create some random data inside the bounding box.
+```{r}
+set.seed(1234)
+bbox <- st_bbox(age_df)
+ll_df <- tibble(
+  lat = runif(100, bbox$xmin, bbox$xmax),
+  long =  runif(100, bbox$ymin, bbox$ymax),
+  val = runif(100)
+)
+```
+
+If the CRS don't match, you can run into trouble.
+
+```{r}
+ll_sf <- ll_df |>
+  st_as_sf(coords = c("lat", "long")) |> 
+  st_set_crs(4380)
+
+ggplot(age_df) +
+  geom_sf() +
+  geom_sf(data = ll_sf)
+```
+
+
+
+The easiest way to pick the CRS is to use one from another dataset.
+
+```{r}
+ll_sf <- ll_df |> 
+  st_as_sf(coords = c("lat", "long")) |> 
+  st_set_crs(st_crs(age_df))
+
+ggplot(age_df) +
+  geom_sf() +
+  geom_sf(data = ll_sf)
+```
+
+## Spatial Filters and Joins
+
+We can filter a spatial data set to only include data that intersects with another data set.
+
+```{r}
+st_filter(age_df, ll_sf)
+```
+
+(Change the `.predicate` parameter if you want to filter according to something besides intersects.)
+
+
+Joins can be used to link something like latitude longitude to other spatial data.
+
+
+```{r}
+ll_sf |>
+  st_join(age_df, join = st_within) |>
+  st_drop_geometry()
+```
+
+
+# Going back to the COVID data
+
+```{r}
+age_df |> left_join(county_cdf, join_by(FIPS == fips), relationship = "many-to-many")
+```
+
